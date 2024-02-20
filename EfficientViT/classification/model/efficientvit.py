@@ -170,132 +170,132 @@ class RelPos2d(torch.nn.Module):
 
         return retention_rel_pos
 
-class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki (reuse attention + trainingab) (실험 진행 안함, 다시 할 것)
-    r""" Cascaded Group Attention.
+# class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki (reuse attention + HW decomposition + trainingab) (실험 진행 안함, 다시 할 것)
+#     r""" Cascaded Group Attention.
 
-    Args:
-        dim (int): Number of input channels.
-        key_dim (int): The dimension for query and key.
-        num_heads (int): Number of attention heads.
-        attn_ratio (int): Multiplier for the query dim for value dimension.
-        resolution (int): Input resolution, correspond to the window size.
-        kernels (List[int]): The kernel size of the dw conv on query.
-    """
-    def __init__(self, dim, key_dim, num_heads=8,
-                 attn_ratio=4,
-                 resolution=14,
-                 kernels=[5, 5, 5, 5],        
-                 init_value=2,
-                heads_ranges=4):
-        super().__init__()
-        self.num_heads = num_heads
-        self.scale = key_dim ** -0.5
-        self.key_dim = key_dim
-        self.d = int(attn_ratio * key_dim)
-        self.attn_ratio = attn_ratio
+#     Args:
+#         dim (int): Number of input channels.
+#         key_dim (int): The dimension for query and key.
+#         num_heads (int): Number of attention heads.
+#         attn_ratio (int): Multiplier for the query dim for value dimension.
+#         resolution (int): Input resolution, correspond to the window size.
+#         kernels (List[int]): The kernel size of the dw conv on query.
+#     """
+#     def __init__(self, dim, key_dim, num_heads=8,
+#                  attn_ratio=4,
+#                  resolution=14,
+#                  kernels=[5, 5, 5, 5],        
+#                  init_value=2,
+#                 heads_ranges=4):
+#         super().__init__()
+#         self.num_heads = num_heads
+#         self.scale = key_dim ** -0.5
+#         self.key_dim = key_dim
+#         self.d = int(attn_ratio * key_dim)
+#         self.attn_ratio = attn_ratio
 
-        self.qk = Conv2d_BN(dim, dim // 2, resolution=resolution)
-        self.dws = Conv2d_BN(dim // 4, dim // 4, kernels[0], 1, kernels[0]//2, groups=dim // 4, resolution=resolution)
+#         self.qk = Conv2d_BN(dim, dim // 2, resolution=resolution)
+#         self.dws = Conv2d_BN(dim // 4, dim // 4, kernels[0], 1, kernels[0]//2, groups=dim // 4, resolution=resolution)
 
-        vs = []
-        for _ in range(num_heads):
-            vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
-        self.vs = torch.nn.ModuleList(vs)
+#         vs = []
+#         for _ in range(num_heads):
+#             vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
+#         self.vs = torch.nn.ModuleList(vs)
         
-        self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
-            self.d * num_heads, dim, bn_weight_init=0, resolution=resolution))
+#         self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
+#             self.d * num_heads, dim, bn_weight_init=0, resolution=resolution))
 
-        points = list(range(resolution))
-        N = len(points)
-        attention_offsets = {}
-        idxs = []
-        for p1 in points:
-            for p2 in points:
-                offset = abs(p1 - p2)
-                if offset not in attention_offsets:
-                    attention_offsets[offset] = len(attention_offsets)
-                idxs.append(attention_offsets[offset])
+#         points = list(range(resolution))
+#         N = len(points)
+#         attention_offsets = {}
+#         idxs = []
+#         for p1 in points:
+#             for p2 in points:
+#                 offset = abs(p1 - p2)
+#                 if offset not in attention_offsets:
+#                     attention_offsets[offset] = len(attention_offsets)
+#                 idxs.append(attention_offsets[offset])
 
-        # points = list(itertools.product(range(resolution), range(resolution)))
-        # N = len(points)
-        # attention_offsets = {}
-        # idxs = []
-        # for p1 in points:
-        #     for p2 in points:
-        #         offset = (abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))
-        #         if offset not in attention_offsets:
-        #             attention_offsets[offset] = len(attention_offsets)
-        #         idxs.append(attention_offsets[offset])
-        # self.attention_biases = torch.nn.Parameter(
-        #     torch.zeros(1, len(attention_offsets)))
-        # self.register_buffer('attention_bias_idxs',
-        #                      torch.LongTensor(idxs).view(N, N))
+#         # points = list(itertools.product(range(resolution), range(resolution)))
+#         # N = len(points)
+#         # attention_offsets = {}
+#         # idxs = []
+#         # for p1 in points:
+#         #     for p2 in points:
+#         #         offset = (abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))
+#         #         if offset not in attention_offsets:
+#         #             attention_offsets[offset] = len(attention_offsets)
+#         #         idxs.append(attention_offsets[offset])
+#         # self.attention_biases = torch.nn.Parameter(
+#         #     torch.zeros(1, len(attention_offsets)))
+#         # self.register_buffer('attention_bias_idxs',
+#         #                      torch.LongTensor(idxs).view(N, N))
 
-        self.attention_biases_h = torch.nn.Parameter(torch.zeros(1, len(attention_offsets)))
-        self.attention_biases_w = torch.nn.Parameter(torch.zeros(1, len(attention_offsets)))
+#         self.attention_biases_h = torch.nn.Parameter(torch.zeros(1, len(attention_offsets)))
+#         self.attention_biases_w = torch.nn.Parameter(torch.zeros(1, len(attention_offsets)))
 
-        self.register_buffer('attention_bias_idxs_h', torch.LongTensor(idxs).view(N, N))
-        self.register_buffer('attention_bias_idxs_w', torch.LongTensor(idxs).view(N, N))
+#         self.register_buffer('attention_bias_idxs_h', torch.LongTensor(idxs).view(N, N))
+#         self.register_buffer('attention_bias_idxs_w', torch.LongTensor(idxs).view(N, N))
 
-    @torch.no_grad()
-    def train(self, mode=True):
-        super().train(mode)
-        if mode and hasattr(self, 'ab_h'):
-            del self.ab_h, self.ab_w #0행렬이 만들어져야됨
-        else:
-            self.ab_h = self.attention_biases_h[:, self.attention_bias_idxs_h]
-            self.ab_w = self.attention_biases_w[:, self.attention_bias_idxs_w]
+#     @torch.no_grad()
+#     def train(self, mode=True):
+#         super().train(mode)
+#         if mode and hasattr(self, 'ab_h'):
+#             del self.ab_h, self.ab_w #0행렬이 만들어져야됨
+#         else:
+#             self.ab_h = self.attention_biases_h[:, self.attention_bias_idxs_h]
+#             self.ab_w = self.attention_biases_w[:, self.attention_bias_idxs_w]
 
-    def forward(self, x):  # x (B,C,H,W)
-        B, C, H, W = x.shape
+#     def forward(self, x):  # x (B,C,H,W)
+#         B, C, H, W = x.shape
 
-        trainingab_h = self.attention_biases_h[:, self.attention_bias_idxs_h]
-        trainingab_w = self.attention_biases_w[:, self.attention_bias_idxs_w]
+#         trainingab_h = self.attention_biases_h[:, self.attention_bias_idxs_h]
+#         trainingab_w = self.attention_biases_w[:, self.attention_bias_idxs_w]
 
-        feat = self.qk(x)
-        q, k = feat.view(B, -1, H, W).split([C // 4, C // 4], dim=1) # B, C/h, H, W
-        # q, k = feat.view(B, -1, H, W).split([C // 2, C // 2], dim=1) # B, C/h, H, W
-        q = self.dws(q)
+#         feat = self.qk(x)
+#         q, k = feat.view(B, -1, H, W).split([C // 4, C // 4], dim=1) # B, C/h, H, W
+#         # q, k = feat.view(B, -1, H, W).split([C // 2, C // 2], dim=1) # B, C/h, H, W
+#         q = self.dws(q)
         
-        #along with width
-        qr_w = q.permute(0, 2, 3, 1) #(b, h, w, d1)
-        kr_w = k.permute(0, 2, 3, 1) #(b, h, w, d1)        
-        attn_w = (
-                (qr_w @ kr_w.transpose(-2, -1)) * self.scale
-                +
-                (trainingab_w if self.training else self.ab_w)
-            ) #(b, h, w_q, w_k)
-        attn_w = attn_w.softmax(dim=-1) # BNN
+#         #along with width
+#         qr_w = q.permute(0, 2, 3, 1) #(b, h, w, d1)
+#         kr_w = k.permute(0, 2, 3, 1) #(b, h, w, d1)        
+#         attn_w = (
+#                 (qr_w @ kr_w.transpose(-2, -1)) * self.scale
+#                 +
+#                 (trainingab_w if self.training else self.ab_w)
+#             ) #(b, h, w_q, w_k)
+#         attn_w = attn_w.softmax(dim=-1) # BNN
 
-        #along with height
-        qr_h = qr_w.permute(0, 2, 1, 3) #(b, w, h, d1)
-        kr_h = kr_w.permute(0, 2, 1, 3) #(b, w, h, d1)        
-        attn_h = (
-                (qr_h @ kr_h.transpose(-2, -1)) * self.scale
-                +
-                (trainingab_h if self.training else self.ab_h)
-            ) #(b, w, h_q, h_k)
-        attn_h = attn_h.softmax(dim=-1) # BNN
+#         #along with height
+#         qr_h = qr_w.permute(0, 2, 1, 3) #(b, w, h, d1)
+#         kr_h = kr_w.permute(0, 2, 1, 3) #(b, w, h, d1)        
+#         attn_h = (
+#                 (qr_h @ kr_h.transpose(-2, -1)) * self.scale
+#                 +
+#                 (trainingab_h if self.training else self.ab_h)
+#             ) #(b, w, h_q, h_k)
+#         attn_h = attn_h.softmax(dim=-1) # BNN
 
-        feats_in = x.chunk(len(self.vs), dim=1)
-        feats_out = []
+#         feats_in = x.chunk(len(self.vs), dim=1)
+#         feats_out = []
 
-        feat = feats_in[0]
-        for i, vs in enumerate(self.vs):
-            if i > 0: # add the previous output to the input
-                feat = feat + feats_in[i] #cascading 방식
-            v = vs(feat).permute(0, 2, 3, 1) # (b, h, w, d2)
-            v = torch.matmul(attn_w, v) # (b, h, w, d2)
-            v = v.permute(0, 2, 1, 3) # (b, w, h, d2)
-            feats = torch.matmul(attn_h, v) # (b, w, h, d2)
-            feats_out.append(feats.permute(0, 3, 2, 1)) # (b, c, h, w)
-        x = self.proj(torch.cat(feats_out, 1))
+#         feat = feats_in[0]
+#         for i, vs in enumerate(self.vs):
+#             if i > 0: # add the previous output to the input
+#                 feat = feat + feats_in[i] #cascading 방식
+#             v = vs(feat).permute(0, 2, 3, 1) # (b, h, w, d2)
+#             v = torch.matmul(attn_w, v) # (b, h, w, d2)
+#             v = v.permute(0, 2, 1, 3) # (b, w, h, d2)
+#             feats = torch.matmul(attn_h, v) # (b, w, h, d2)
+#             feats_out.append(feats.permute(0, 3, 2, 1)) # (b, c, h, w)
+#         x = self.proj(torch.cat(feats_out, 1))
 
-        # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
-        return x
+#         # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
+#         return x
 
 
-# class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki (reuse attention + decay mask) (실험 진행 안함, 다시 할 것)
+# class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki (reuse attention + decay mask) (실험 진행 안함, 다시 할 것) (성능 측정은 안해봤지만 reuse attention only 보다 속도가 느림)
 #     r""" Cascaded Group Attention.
 
 #     Args:
@@ -393,93 +393,93 @@ class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki (reuse attentio
 #         # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
 #         return x
 
-# class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention 적용됨 (현재 이거 안씀) Max accuracy: 71.79% (reuse_test.txt 참조)
-#     r""" Cascaded Group Attention.
+class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention 적용됨 (현재 이거 안씀) Max accuracy: 71.79% (reuse_test.txt 참조)
+    r""" Cascaded Group Attention.
 
-#     Args:
-#         dim (int): Number of input channels.
-#         key_dim (int): The dimension for query and key.
-#         num_heads (int): Number of attention heads.
-#         attn_ratio (int): Multiplier for the query dim for value dimension.
-#         resolution (int): Input resolution, correspond to the window size.
-#         kernels (List[int]): The kernel size of the dw conv on query.
-#     """
-#     def __init__(self, dim, key_dim, num_heads=8,
-#                  attn_ratio=4,
-#                  resolution=14,
-#                  kernels=[5, 5, 5, 5],):
-#         super().__init__()
-#         self.num_heads = num_heads
-#         self.scale = key_dim ** -0.5
-#         self.key_dim = key_dim
-#         self.d = int(attn_ratio * key_dim)
-#         self.attn_ratio = attn_ratio
+    Args:
+        dim (int): Number of input channels.
+        key_dim (int): The dimension for query and key.
+        num_heads (int): Number of attention heads.
+        attn_ratio (int): Multiplier for the query dim for value dimension.
+        resolution (int): Input resolution, correspond to the window size.
+        kernels (List[int]): The kernel size of the dw conv on query.
+    """
+    def __init__(self, dim, key_dim, num_heads=8,
+                 attn_ratio=4,
+                 resolution=14,
+                 kernels=[5, 5, 5, 5],):
+        super().__init__()
+        self.num_heads = num_heads
+        self.scale = key_dim ** -0.5
+        self.key_dim = key_dim
+        self.d = int(attn_ratio * key_dim)
+        self.attn_ratio = attn_ratio
 
-#         self.qk = Conv2d_BN(dim, dim // 2, resolution=resolution)
-#         self.dws = Conv2d_BN(dim // 4, dim // 4, kernels[0], 1, kernels[0]//2, groups=dim // 4, resolution=resolution)
+        self.qk = Conv2d_BN(dim, dim // 2, resolution=resolution)
+        self.dws = Conv2d_BN(dim // 4, dim // 4, kernels[0], 1, kernels[0]//2, groups=dim // 4, resolution=resolution)
 
-#         vs = []
-#         for _ in range(num_heads):
-#             vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
-#         self.vs = torch.nn.ModuleList(vs)
+        vs = []
+        for _ in range(num_heads):
+            vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
+        self.vs = torch.nn.ModuleList(vs)
         
-#         self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
-#             self.d * num_heads, dim, bn_weight_init=0, resolution=resolution))
+        self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
+            self.d * num_heads, dim, bn_weight_init=0, resolution=resolution))
 
-#         points = list(itertools.product(range(resolution), range(resolution)))
-#         N = len(points)
-#         attention_offsets = {}
-#         idxs = []
-#         for p1 in points:
-#             for p2 in points:
-#                 offset = (abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))
-#                 if offset not in attention_offsets:
-#                     attention_offsets[offset] = len(attention_offsets)
-#                 idxs.append(attention_offsets[offset])
-#         self.attention_biases = torch.nn.Parameter(
-#             torch.zeros(num_heads, len(attention_offsets)))
-#         self.register_buffer('attention_bias_idxs',
-#                              torch.LongTensor(idxs).view(N, N))
+        points = list(itertools.product(range(resolution), range(resolution)))
+        N = len(points)
+        attention_offsets = {}
+        idxs = []
+        for p1 in points:
+            for p2 in points:
+                offset = (abs(p1[0] - p2[0]), abs(p1[1] - p2[1]))
+                if offset not in attention_offsets:
+                    attention_offsets[offset] = len(attention_offsets)
+                idxs.append(attention_offsets[offset])
+        self.attention_biases = torch.nn.Parameter(
+            torch.zeros(num_heads, len(attention_offsets)))
+        self.register_buffer('attention_bias_idxs',
+                             torch.LongTensor(idxs).view(N, N))
 
-#     @torch.no_grad()
-#     def train(self, mode=True):
-#         super().train(mode)
-#         if mode and hasattr(self, 'ab'):
-#             del self.ab
-#         else:
-#             self.ab = self.attention_biases[:, self.attention_bias_idxs]
+    @torch.no_grad()
+    def train(self, mode=True):
+        super().train(mode)
+        if mode and hasattr(self, 'ab'):
+            del self.ab
+        else:
+            self.ab = self.attention_biases[:, self.attention_bias_idxs]
 
-#     def forward(self, x):  # x (B,C,H,W)
-#         B, C, H, W = x.shape
-#         trainingab = self.attention_biases[:, self.attention_bias_idxs]
+    def forward(self, x):  # x (B,C,H,W)
+        B, C, H, W = x.shape
+        trainingab = self.attention_biases[:, self.attention_bias_idxs]
 
-#         feat = self.qk(x)
-#         q, k = feat.view(B, -1, H, W).split([C // 4, C // 4], dim=1) # B, C/h, H, W
-#         # q, k = feat.view(B, -1, H, W).split([C // 2, C // 2], dim=1) # B, C/h, H, W
-#         q = self.dws(q)
-#         q, k = q.flatten(2), k.flatten(2) # B, C/h, N
-#         attn = (
-#                 (q.transpose(-2, -1) @ k) * self.scale
-#                 +
-#                 (trainingab[0] if self.training else self.ab[0])
-#             )
-#         attn = attn.softmax(dim=-1) # BNN
+        feat = self.qk(x)
+        q, k = feat.view(B, -1, H, W).split([C // 4, C // 4], dim=1) # B, C/h, H, W
+        # q, k = feat.view(B, -1, H, W).split([C // 2, C // 2], dim=1) # B, C/h, H, W
+        q = self.dws(q)
+        q, k = q.flatten(2), k.flatten(2) # B, C/h, N
+        attn = (
+                (q.transpose(-2, -1) @ k) * self.scale
+                +
+                (trainingab[0] if self.training else self.ab[0])
+            )
+        attn = attn.softmax(dim=-1) # BNN
 
-#         feats_in = x.chunk(len(self.vs), dim=1)
-#         feats_out = []
+        feats_in = x.chunk(len(self.vs), dim=1)
+        feats_out = []
 
-#         feat = feats_in[0]
-#         for i, vs in enumerate(self.vs):
-#             if i > 0: # add the previous output to the input
-#                 feat = feat + feats_in[i] #cascading 방식
-#             v = vs(feat)
-#             v = v.flatten(2) # B, C/h, N
-#             feat = (v @ attn.transpose(-2, -1)).view(B, self.d, H, W) # BCHW
-#             feats_out.append(feat)
-#         x = self.proj(torch.cat(feats_out, 1))
+        feat = feats_in[0]
+        for i, vs in enumerate(self.vs):
+            if i > 0: # add the previous output to the input
+                feat = feat + feats_in[i] #cascading 방식
+            v = vs(feat)
+            v = v.flatten(2) # B, C/h, N
+            feat = (v @ attn.transpose(-2, -1)).view(B, self.d, H, W) # BCHW
+            feats_out.append(feat)
+        x = self.proj(torch.cat(feats_out, 1))
 
-#         # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
-#         return x
+        # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
+        return x
     
 # class CascadedGroupAttention(torch.nn.Module): #기존 original cascadedGroupattention from CVPR2023 Max accuracy: 71.40% (original_test.txt 참조)
 #     r""" Cascaded Group Attention.
