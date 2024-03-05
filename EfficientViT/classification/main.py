@@ -29,6 +29,8 @@ from data.threeaugment import new_data_aug_generator
 from engine import train_one_epoch, evaluate
 from losses import DistillationLoss
 
+from finetuner import prune
+
 from model import build
 import utils
 
@@ -162,7 +164,7 @@ def get_args_parser():
                         choices=['kingdom', 'phylum', 'class', 'order',
                                  'supercategory', 'family', 'genus', 'name'],
                         type=str, help='semantic granularity')
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default='results',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -186,8 +188,12 @@ def get_args_parser():
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
-    parser.add_argument('--save_freq', default=1, type=int,
+    parser.add_argument('--save_freq', default=50, type=int,
                         help='frequency of model saving')
+    
+    # pruning parameters
+    parser.add_argument('--prune', action='store_true',
+                        help='Perform pruning only')
     return parser
 
 
@@ -303,7 +309,11 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
+        if args.prune:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model, device_ids=[args.gpu], broadcast_buffers=False, find_unused_parameters=True) #pruning only
+        else:
+            model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.gpu])
         model_without_ddp = model.module
     n_parameters = sum(p.numel()
@@ -386,60 +396,66 @@ def main(args):
             f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    max_accuracy = 0.0
-    max_accuracy_ema = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+    if args.prune:
+        print(f"Start pruning")
+        pruned_model = prune(model, data_loader_train, optimizer, device, loss_scaler, args.clip_grad, args.clip_mode)
+        test_stats = evaluate(data_loader_val, pruned_model, device)
 
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, args.clip_mode, model_ema, mixup_fn,
-            # set_training_mode=args.finetune == ''  # keep in eval mode during finetuning
-            set_training_mode=True,
-            set_bn_eval=args.set_bn_eval, # set bn to eval if finetune
-        )
+    else:
+        print(f"Start training for {args.epochs} epochs")
+        start_time = time.time()
+        max_accuracy = 0.0
+        max_accuracy_ema = 0.0
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
 
-        lr_scheduler.step(epoch)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                args.clip_grad, args.clip_mode, model_ema, mixup_fn,
+                # set_training_mode=args.finetune == ''  # keep in eval mode during finetuning
+                set_training_mode=True,
+                set_bn_eval=args.set_bn_eval, # set bn to eval if finetune
+            )
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(
-            f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        
-        if args.output_dir:
-            if epoch % args.save_freq == 0 or epoch == args.epochs - 1:
-                ckpt_path = os.path.join(output_dir, 'checkpoint_'+str(epoch)+'.pth')
-                checkpoint_paths = [ckpt_path]
-                print("Saving checkpoint to {}".format(ckpt_path))
-                for checkpoint_path in checkpoint_paths:
-                    utils.save_on_master({
-                        'model': model_without_ddp.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch,
-                        'model_ema': get_state_dict(model_ema),
-                        'scaler': loss_scaler.state_dict(),
-                        'args': args,
-                    }, checkpoint_path)
+            lr_scheduler.step(epoch)
 
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
-        
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+            test_stats = evaluate(data_loader_val, model, device)
+            print(
+                f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            
+            if args.output_dir:
+                if epoch % args.save_freq == 0 or epoch == args.epochs - 1:
+                    ckpt_path = os.path.join(output_dir, 'checkpoint_'+str(epoch)+'.pth')
+                    checkpoint_paths = [ckpt_path]
+                    print("Saving checkpoint to {}".format(ckpt_path))
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'model_ema': get_state_dict(model_ema),
+                            'scaler': loss_scaler.state_dict(),
+                            'args': args,
+                        }, checkpoint_path)
 
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            max_accuracy = max(max_accuracy, test_stats["acc1"])
+            print(f'Max accuracy: {max_accuracy:.2f}%')
+            
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                            **{f'test_{k}': v for k, v in test_stats.items()},
+                            'epoch': epoch,
+                            'n_parameters': n_parameters}
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+            if args.output_dir and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print('Training time {}'.format(total_time_str))
 
 
 if __name__ == '__main__':

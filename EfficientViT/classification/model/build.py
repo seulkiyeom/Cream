@@ -55,6 +55,8 @@ EfficientViT_m4 = {
         'num_heads': [4, 4, 4],
         'window_size': [7, 7, 7],
         'kernels': [7, 5, 3, 3],
+        # 'drop_path_rate': 0.,  #구현되어 있음 but 의미있는 성능이 나오는것 같지 않음
+        # 'chunkwise_recurrents': [True, False, False], #구현되어 있음 but 의미있는 성능이 나오는것 같지 않음
     }
 
 EfficientViT_m5 = {
