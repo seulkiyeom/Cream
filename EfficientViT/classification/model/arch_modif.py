@@ -1,6 +1,6 @@
 import torch.nn as nn
 
-def get_new_layer(orig_layer, new_cin=None, new_cout=None):
+def get_new_layer(orig_layer, new_cin=None, new_cout=None, DW=False):
     """ Generate a new layer, with the properties of the input layer.
     If the new number of input or output channel changed, return a new layer with the updated dimensions.
     Else, return the input layer.
@@ -18,7 +18,7 @@ def get_new_layer(orig_layer, new_cin=None, new_cout=None):
     if (orig_cin == new_cin and orig_cout == new_cout):
         return orig_layer
         
-    if isinstance(orig_layer, nn.Conv2d):
+    if isinstance(orig_layer, nn.Conv2d) and not DW: #Normal Conv
         new_layer = nn.Conv2d(
                             in_channels = new_cin, 
                             out_channels = new_cout,
@@ -26,7 +26,20 @@ def get_new_layer(orig_layer, new_cin=None, new_cout=None):
                             stride =       orig_layer.stride,
                             padding =      orig_layer.padding,
                             dilation =     orig_layer.dilation,
-                            bias =         orig_layer.bias is not None
+                            bias =         orig_layer.bias is not None,
+                            groups =       orig_layer.groups,
+                        )
+    if isinstance(orig_layer, nn.Conv2d) and DW: #DWConv
+        assert new_cin == new_cout
+        new_layer = nn.Conv2d(
+                            in_channels = new_cin, 
+                            out_channels = new_cout,
+                            kernel_size =  orig_layer.kernel_size,
+                            stride =       orig_layer.stride,
+                            padding =      orig_layer.padding,
+                            dilation =     orig_layer.dilation,
+                            bias =         orig_layer.bias is not None,
+                            groups =       new_cout,
                         )
     if isinstance(orig_layer, nn.Linear):
         new_layer = nn.Linear(
@@ -109,7 +122,7 @@ def get_module_in_model(model, name_module):
             m = getattr(m, m_name)
     return m
 
-def prune_layer(model: nn.Module, name_target: str, preserved_indexes: list, dim: int = 0):
+def prune_layer(model: nn.Module, name_target: str, preserved_indexes: list, both_prune: bool = True):
     """
         Prune the given module (name_target) in the given model, in order to only preserve the filter at the given indexes.
         Args:
@@ -131,8 +144,8 @@ def prune_layer(model: nn.Module, name_target: str, preserved_indexes: list, dim
         original_weight_data = orig_layer.weight.data.detach().clone()
         if orig_layer.bias is not None: original_bias_data = orig_layer.bias.data.detach().clone()
 
-        if dim==0: # prune output channel
-            new_layer = get_new_layer(orig_layer, new_cin=None, new_cout=c_nb)
+        if both_prune: # prune both input and output channel (= DWConv)
+            new_layer = get_new_layer(orig_layer, new_cin=c_nb, new_cout=c_nb, DW=True) #prune both channel
             new_layer.weight.data = original_weight_data[preserved_indexes]
             if new_layer.bias is not None: new_layer.bias.data = original_bias_data[preserved_indexes]
         else: # prune input channel
@@ -153,5 +166,6 @@ def prune_layer(model: nn.Module, name_target: str, preserved_indexes: list, dim
                 i+=1
     set_module_in_model(model, name_target, new_layer)
 
+    dim = 0 #along with output channel
     orig = (orig_cout if dim==0 else orig_cin)
     return (orig-len(preserved_indexes))/orig

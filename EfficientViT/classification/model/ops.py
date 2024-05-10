@@ -1,8 +1,22 @@
 import torch
+import torch.nn as nn
 from timm.models.vision_transformer import DropPath, trunc_normal_
 from timm.models.layers import SqueezeExcite
 from .utils import val2tuple, get_same_padding
 from functools import partial
+
+class DWConv2D(nn.Module):
+    def __init__(self, in_channels, kernal_size, stride, bias=False):
+        super(DWConv2D, self).__init__()
+        padding = (kernal_size - 1) // 2
+
+        self.depthwise_conv = nn.Conv2d(in_channels, in_channels, kernel_size=kernal_size, padding=padding, stride=stride, groups=in_channels, bias=bias)
+        self.bn = nn.BatchNorm2d(in_channels)
+
+    def forward(self, x):
+        out = self.depthwise_conv(x)
+        out = self.bn(out)
+        return out
 
 class Conv2d_BN(torch.nn.Sequential):
     def __init__(self, a, b, ks=1, stride=1, pad=0, dilation=1,

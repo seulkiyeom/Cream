@@ -35,6 +35,41 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 100
 
+    # for i, (samples, targets) in enumerate(metric_logger.log_every( #Just for test
+    #         data_loader, print_freq, header)):
+    #     if i == 0:
+    #         samples = samples.to(device, non_blocking=True)
+    #         targets = targets.to(device, non_blocking=True)
+
+    #         if mixup_fn is not None:
+    #             samples, targets = mixup_fn(samples, targets)
+
+    #         if True:  # with torch.cuda.amp.autocast():
+    #             outputs = model(samples)
+    #             loss = criterion(samples, outputs, targets)
+
+    #         loss_value = loss.item()
+
+    #         if not math.isfinite(loss_value):
+    #             print("Loss is {}, stopping training".format(loss_value))
+    #             sys.exit(1)
+
+    #         optimizer.zero_grad()
+
+    #         # this attribute is added by timm on one optimizer (adahessian)
+    #         is_second_order = hasattr(
+    #             optimizer, 'is_second_order') and optimizer.is_second_order
+    #         loss_scaler(loss, optimizer, clip_grad=clip_grad, clip_mode=clip_mode,
+    #                     parameters=model.parameters(), create_graph=is_second_order)
+
+    #         torch.cuda.synchronize()
+    #         if model_ema is not None:
+    #             model_ema.update(model)
+
+    #         metric_logger.update(loss=loss_value)
+    #         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+    #         break
+
     for samples, targets in metric_logger.log_every(
             data_loader, print_freq, header):
         samples = samples.to(device, non_blocking=True)

@@ -5,8 +5,7 @@ from model.utils import get_flops
 from model.arch_modif import replace_layer
 
 class BottleneckReader():
-    def __init__(self, model, criterion, data_loader, modules, init_lamb, device, maxflops, targetflops, lr=0.6, steps=200, batch_size=1, beta=7,
-                 loss_scaler=None, clip_grad=0.1, clip_mode=None):
+    def __init__(self, model, criterion, data_loader, modules, init_lamb, device, maxflops, targetflops, lr=0.6, steps=200, batch_size=1, beta=7):
         self.model = model
         self.model_criterion = criterion
         self.device = device
@@ -18,9 +17,6 @@ class BottleneckReader():
         self.unique_alphas = UniqueAlphaMasks(self.device)
         self.unique_alphas.create_alpha(init_lamb)
         self.used_masks = [True for _ in range(len(init_lamb))] 
-        self.loss_scaler=loss_scaler 
-        self.clip_grad=clip_grad
-        self.clip_mode=clip_mode
 
         self.bottlenecks = []
         self.original_layers = []
@@ -64,9 +60,14 @@ class BottleneckReader():
         print(f'nb unique bottlenecks: {sum(self.used_masks)}')
         for i in range(len(self.bottlenecks)):
             replace_layer(self.model, self.original_layers[i], self.sequentials[i]) #bottleneck 싹다 넣어주고
-        self._train_bottleneck() #training 시작
+        # self._train_bottleneck() #training 시작
 
-        return self.best_attribution_score
+        # return self.best_attribution_score
+        return 0
+    
+    def remove_layer(self):
+        for i in range(len(self.bottlenecks)):
+            replace_layer(self.model, self.sequentials[i], self.original_layers[i])
 
     def _train_bottleneck(self):
         params = self.unique_alphas.get_params(self.used_masks)
@@ -90,7 +91,7 @@ class BottleneckReader():
                 
                 for b in self.bottlenecks:
                     b.update_lambdas()
-                out = self.model(inputs)
+                # out = self.model(inputs)
                 # loss = self.model_criterion(out, targets)
                 
                 loss = self.calc_loss(inputs, targets.detach(), i, self.train_steps, verbose=True)/accumulation_steps
@@ -156,6 +157,12 @@ class BottleneckReader():
         bool_loss /= sum(self.used_masks)
         
         return pruning_loss, bool_loss
+    
+    def update_alpha_with(self, init_lamb_list):
+        for i, init_lamb in enumerate(init_lamb_list):
+            self.unique_alphas.set_lambda(init_lamb, i)
+        for b in self.bottlenecks:
+            b.update_lambdas()
 
 
 class UniqueAlphaMasks(nn.Module):

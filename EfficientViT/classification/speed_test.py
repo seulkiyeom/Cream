@@ -9,12 +9,9 @@ import timm
 from model.build import EfficientViT_M0, EfficientViT_M1, EfficientViT_M2, EfficientViT_M3, EfficientViT_M4, EfficientViT_M5
 import torchvision
 import utils
-torch.autograd.set_grad_enabled(False)
-
 
 T0 = 10
 T1 = 60
-
 
 def compute_throughput_cpu(name, model, device, batch_size, resolution=224):
     inputs = torch.randn(batch_size, 3, resolution, resolution, device=device)
@@ -53,43 +50,46 @@ def compute_throughput_cuda(name, model, device, batch_size, resolution=224):
     print(name, device, batch_size / timing.mean().item(),
           'images/s @ batch size', batch_size)
 
-for device in ['cuda:0', 'cpu']:
+if __name__ == '__main__':
+    torch.autograd.set_grad_enabled(False)
 
-    if 'cuda' in device and not torch.cuda.is_available():
-        print("no cuda")
-        continue
+    for device in ['cuda:0', 'cpu']:
 
-    if device == 'cpu':
-        os.system('echo -n "nb processors "; '
-                  'cat /proc/cpuinfo | grep ^processor | wc -l; '
-                  'cat /proc/cpuinfo | grep ^"model name" | tail -1')
-        print('Using 1 cpu thread')
-        torch.set_num_threads(1)
-        compute_throughput = compute_throughput_cpu
-    else:
-        print(torch.cuda.get_device_name(torch.cuda.current_device()))
-        compute_throughput = compute_throughput_cuda
-
-    for n, batch_size0, resolution in [
-        ('EfficientViT_M0', 2048, 224),
-        ('EfficientViT_M1', 2048, 224),
-        ('EfficientViT_M2', 2048, 224),
-        ('EfficientViT_M3', 2048, 224),
-        ('EfficientViT_M4', 2048, 224),
-        ('EfficientViT_M5', 2048, 224),
-    ]:
+        if 'cuda' in device and not torch.cuda.is_available():
+            print("no cuda")
+            continue
 
         if device == 'cpu':
-            batch_size = 16
+            os.system('echo -n "nb processors "; '
+                    'cat /proc/cpuinfo | grep ^processor | wc -l; '
+                    'cat /proc/cpuinfo | grep ^"model name" | tail -1')
+            print('Using 1 cpu thread')
+            torch.set_num_threads(1)
+            compute_throughput = compute_throughput_cpu
         else:
-            batch_size = batch_size0
-            torch.cuda.empty_cache()
-        inputs = torch.randn(batch_size, 3, resolution,
-                             resolution, device=device)
-        model = eval(n)(num_classes=1000)
-        utils.replace_batchnorm(model)
-        model.to(device)
-        model.eval()
-        model = torch.jit.trace(model, inputs)
-        compute_throughput(n, model, device,
-                           batch_size, resolution=resolution)
+            print(torch.cuda.get_device_name(torch.cuda.current_device()))
+            compute_throughput = compute_throughput_cuda
+
+        for n, batch_size0, resolution in [
+            ('EfficientViT_M0', 2048, 224),
+            ('EfficientViT_M1', 2048, 224),
+            ('EfficientViT_M2', 2048, 224),
+            ('EfficientViT_M3', 2048, 224),
+            ('EfficientViT_M4', 2048, 224),
+            ('EfficientViT_M5', 2048, 224),
+        ]:
+
+            if device == 'cpu':
+                batch_size = 16
+            else:
+                batch_size = batch_size0
+                torch.cuda.empty_cache()
+            inputs = torch.randn(batch_size, 3, resolution,
+                                resolution, device=device)
+            model = eval(n)(num_classes=1000)
+            utils.replace_batchnorm(model)
+            model.to(device)
+            model.eval()
+            model = torch.jit.trace(model, inputs)
+            compute_throughput(n, model, device,
+                            batch_size, resolution=resolution)

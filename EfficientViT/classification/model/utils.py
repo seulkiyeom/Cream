@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 def val2tuple(x: any, min_len: int = 1, idx_repeat: int = -1) -> tuple:
     # 입력 값을 리스트로 변환
@@ -25,6 +26,10 @@ def get_same_padding(kernel_size):
         assert kernel_size % 2 > 0, "kernel size should be odd number"
         return kernel_size // 2
     
+def split_layer(total_channels, num_groups):
+    split = [int(np.ceil(total_channels / num_groups)) for _ in range(num_groups)]
+    split[num_groups - 1] += total_channels - sum(split)
+    return split
 
 def get_flops(module_type, info, lamb_in=None, lamb_out=None, train=True):
     """

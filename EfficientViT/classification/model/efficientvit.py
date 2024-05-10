@@ -7,7 +7,8 @@
 import torch
 import itertools
 
-from .ops import Conv2d_BN, BN_Linear, PatchMerging, Residual, FFN, OpSequential, DSConv, MBConv
+from .ops import Conv2d_BN, BN_Linear, PatchMerging, Residual, FFN, OpSequential, DSConv, MBConv, DWConv2D
+from .utils import split_layer
 import time
 
 class RelPos2d(torch.nn.Module):
@@ -300,7 +301,7 @@ class CascadedGroupAttention_chunk(torch.nn.Module): #슬기꺼 seulki (reuse at
 #         # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
 #         return x
 
-class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention 적용됨 Max accuracy: 71.79% (reuse_test.txt 참조)
+class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention 적용됨 Max accuracy: 71.79% (reuse_test.txt 참조) (현재 사용중)
     r""" Cascaded Group Attention.
 
     Args:
@@ -325,11 +326,58 @@ class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention
         self.qk = Conv2d_BN(dim, dim // 2, resolution=resolution)
         self.dws = Conv2d_BN(dim // 4, dim // 4, kernels[0], 1, kernels[0]//2, groups=dim // 4, resolution=resolution)
 
-        vs = []
-        for _ in range(num_heads):
-            vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
-        self.vs = torch.nn.ModuleList(vs)
+        # vs = [] #기존 방식
+        # for i in range(num_heads):
+        #     vs.append(Conv2d_BN(dim // (num_heads), self.d, resolution=resolution))
+        # self.vs = torch.nn.ModuleList(vs)
 
+        # mix = [] #기존 방식
+        # ks = [1, 3, 5, 5]
+        # pad = [0, 1, 2, 2]
+        # for i in range(num_heads):
+        #     mix.append(
+        #         torch.nn.Sequential(
+        #             torch.nn.Conv2d(dim // (num_heads), self.d, kernel_size=ks[i], padding=pad[i], bias=False),
+        #             torch.nn.BatchNorm2d(self.d)
+        #         )
+        #     )
+        # self.mix = torch.nn.ModuleList(mix)
+
+        # exp_ratio = 4 #Inverted Residual Conv 적용 (성능은 잘나오는데 속도가 느림)
+        # ks = [1, 3, 5, 5]
+        # pad = [0, 1, 2, 2]
+        # self.mix3 = torch.nn.ModuleList()
+        # for idx in range(num_heads):
+        #     self.mix3.append(torch.nn.Sequential(torch.nn.Conv2d(dim // (num_heads), self.d * exp_ratio, kernel_size=1),
+        #                                 torch.nn.Hardswish(),
+        #                                 torch.nn.Conv2d(self.d * exp_ratio, self.d * exp_ratio, kernel_size=ks[idx], padding=pad[idx], groups=self.d * exp_ratio),
+        #                                 torch.nn.Hardswish(),
+        #                                 torch.nn.Conv2d(self.d * exp_ratio, dim // (num_heads), kernel_size=1, bias=False),
+        #                                 torch.nn.BatchNorm2d(dim // (num_heads))
+        #                                 )
+        #     )
+
+        # self.mix = torch.nn.ModuleList() #최근에 잘나왔던 MixConv (이거 현재 마지막까지 사용중)
+        # ks = [1, 3, 5, 5]
+        # pad = [0, 1, 2, 2]
+        # for i in range(num_heads):
+        #     self.mix.append(Conv2d_BN(dim // (num_heads), self.d, ks=ks[i], pad=pad[i], resolution=resolution))
+
+        ks = [1, 3, 5, 5] #Depthwise 방식? 좋지 못한듯 (reuse_depthwise.txt 참고)
+        self.split_out_channels = split_layer(dim, num_heads) #Depth-wise Conv 적용 (without Pointwise Conv)
+        mix = []
+        for idx in range(num_heads):
+            kernel_size = ks[idx]
+            # kernel_size = 2 * idx + 1
+            # mix.append(DWConv2D(self.split_out_channels[idx], kernal_size=kernel_size, stride=1, bias=False))
+            pad = (kernel_size - 1) // 2
+            assert self.split_out_channels[idx] == self.d
+            #Depthwise Convolution: Spatial feature learning
+            mix.append(torch.nn.Conv2d(self.split_out_channels[idx], self.d, kernel_size=kernel_size, padding=pad, groups=self.d))
+            # self.mix.append(Conv2d_BN(self.split_out_channels[idx], self.d, ks=kernel_size, pad=pad, groups=self.d, resolution=resolution))
+        self.mix = torch.nn.ModuleList(mix)
+
+        #Pointwise Convolution: Channel-wise feature learning
         self.proj = torch.nn.Sequential(torch.nn.ReLU(), Conv2d_BN(
             self.d * (num_heads), dim, bn_weight_init=0, resolution=resolution)) 
 
@@ -353,8 +401,6 @@ class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention
         self.valuescale = valuescale
         if valuescale:
             self.gamma = torch.nn.Parameter(gamma_init_values * torch.ones(self.num_heads), requires_grad=True)
-            
-
 
     @torch.no_grad()
     def train(self, mode=True):
@@ -384,21 +430,23 @@ class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention
         feats_out = []
 
         feat = feats_in[0]
-        for i, vs in enumerate(self.vs):
+        for i, vs in enumerate(self.mix): ##여기 수정함
             if i > 0: # add the previous output to the input
                 # feat = feat + feats_in[i] #cascading 방식 (with residual connection)
                 feat = feats_in[i] #cascading 방식 (with residual connection)
-            v = vs(feat)
+            v = vs(feat) if self.d == vs.in_channels else vs(feat[:, vs.in_index])
             v = v.flatten(2) # B, C/h, N
             if self.valuescale:
-                feat = self.gamma[i] * (v @ attn.transpose(-2, -1)).view(B, self.d, H, W) # BCHW
+                feat = self.gamma[i] * (v @ attn.transpose(-2, -1)).view(B, -1, H, W) # BCHW
             else:
-                feat = (v @ attn.transpose(-2, -1)).view(B, self.d, H, W) # BCHW
+                # feat = (v @ attn.transpose(-2, -1)).view(B, self.value_dim, H, W) # BCHW
+                feat = (v @ attn.transpose(-2, -1)).view(B, -1, H, W) # BCHW
             feats_out.append(feat)
         x = self.proj(torch.cat(feats_out, 1))
 
         # x = 0.5 * x + 0.5 * x.mean(dim=[2,3], keepdim=True) #Uniform attention
         return x
+
 
     
 # class CascadedGroupAttention(torch.nn.Module): #슬기꺼 seulki reuse attention 적용됨 Max accuracy: 71.79% (reuse_test.txt 참조) (저장용)
